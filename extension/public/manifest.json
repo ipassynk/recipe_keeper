@@ -1,0 +1,16 @@
+{
+    "manifest_version": 3,
+    "name": "Recipe Keeper",
+    "version": "1.0",
+    "description": "Save recipes and send them to backend",
+    "permissions": ["activeTab", "scripting"],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "action": {
+      "default_popup": "popup.html",
+      "default_title": "Recipe Keeper"
+    },
+    "host_permissions": ["<all_urls>"]
+  }
+  
