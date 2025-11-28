@@ -147,3 +147,4 @@ cp env.example .env
     9. Tested on macOS. Windows and Linux support needs verification.
     10. Cache results in redis
     11. Make a routing to different LLMs based on the query 
+    12. Add caching for recipes

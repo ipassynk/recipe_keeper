@@ -21,7 +21,7 @@ async def main(message: cl.Message):
     msg = cl.Message(content="Searching...")
     await msg.send()
 
-    response_content = await cl.make_async(search_recipes)(message.content, img_b64=img_b64)
+    response_content = await search_recipes(message.content, img_b64=img_b64)
 
     msg.content = response_content
     await msg.update()

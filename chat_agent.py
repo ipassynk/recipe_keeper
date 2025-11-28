@@ -13,16 +13,30 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_weaviate import WeaviateVectorStore
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
+from redisvl.utils.vectorize import OpenAITextVectorizer
+from redisvl.extensions.llmcache import SemanticCache
+import redis
 
 load_dotenv(".env", override=True)
 
+redis_client = redis.Redis(host="localhost", port=6379, db=0)
+redis_client.ping()
 
-class CypherQuery(BaseModel):
-    cypher: str = Field(description="The Cypher query to execute")
-
+langcache_embed = OpenAITextVectorizer(
+    model="text-embedding-3-small"
+)
+recipe_cache = SemanticCache(
+    name="recipe-cache",
+    vectorizer=langcache_embed,
+    redis_url="redis://localhost:6379",
+    distance_threshold=0.3,
+    ttl=3600
+)
 
 weaviate_client = weaviate.connect_to_local()
 
+class CypherQuery(BaseModel):
+    cypher: str = Field(description="The Cypher query to execute")
 
 def _weaviate_image_search_impl(img_b64: str):
     """
@@ -66,20 +80,26 @@ def _weaviate_text_search_impl(query_text: str):
     return results
 
 
-def _get_recipe_ids_from_text_search(query_text: str):
+async def _get_recipe_ids_from_text_search(query_text: str):
     """
     Get recipe IDs from Weaviate text search for use in hybrid search.
 
     Args:
         query_text: The text query to search for
     """
+    response = await recipe_cache.acheck(prompt=query_text, distance_threshold=0.3)
+    if response:
+        return response
+    
     collection = weaviate_client.collections.get("Recipe")
     results = collection.query.near_text(
         query=query_text, limit=2, return_metadata=["distance"]
     )
+    recipe_ids = [o.properties["recipeId"] for o in results.objects]
+    await recipe_cache.acache(prompt=query_text, response=recipe_ids)
 
     print(f"Found {len(results.objects)} results")
-    return [o.properties["recipeId"] for o in results.objects]
+    return recipe_ids
 
 
 def weaviate_text_search(query_text: str):
@@ -314,14 +334,14 @@ def neo4j_search_node(state: GraphState) -> GraphState:
     }
 
 
-def hybrid_search_text_node(state: GraphState) -> GraphState:
+async def hybrid_search_text_node(state: GraphState) -> GraphState:
     """
     Perform hybrid text search. Has direct access to state['original_question']!
     """
     original_question = state["original_question"]
     print(f"Performing hybrid text search for: {original_question}")
 
-    recipe_ids = _get_recipe_ids_from_text_search(original_question)
+    recipe_ids = await _get_recipe_ids_from_text_search(original_question)
     if recipe_ids:
         results = _neo4j_search_impl(original_question, recipe_ids)
         return {
@@ -443,7 +463,7 @@ app = workflow.compile()
 # with open("recipe_keeper.png", "wb") as f:
 #     f.write(graph_image)
 
-def search_recipes(question: str, img_b64: str | None = None) -> str:
+async def search_recipes(question: str, img_b64: str | None = None) -> str:
     print(f"Searching for: {question}")
     if img_b64:
         print(f"with image (length: {len(img_b64)})")
@@ -456,21 +476,25 @@ def search_recipes(question: str, img_b64: str | None = None) -> str:
         "img_b64": img_b64,
     }
 
-    result = app.invoke(initial_state)
+    result = await app.ainvoke(initial_state)
     return result["messages"][-1].content
 
 
 # Example usage
 if __name__ == "__main__":
-    #response = search_recipes("Find recipes that mention tacos?")
-    #response = search_recipes("Recipes that use these ingredients: mushroom")
-    # response = search_recipes("Show me recipes using chicken but NOT butter")
-    response = search_recipes("Find recipes with >10 grams of sugar")
-    # response = search_recipes("Show me a recipe with creamy chicken and mushrooms")
-    # response = search_recipes("Give me quick dinner ideas under 20 minutes")
-    # response = search_recipes("Show me recipes that look similar to this dish")
-    # response = search_recipes("Find recipes that look like this image but also mention spicy ingredients")
+    import asyncio
+    async def main():
+        #response = await search_recipes("Find recipes that mention tacos?")
+        #response = await search_recipes("Recipes that use these ingredients: mushroom")
+        # response = await search_recipes("Show me recipes using chicken but NOT butter")
+        response = await search_recipes("Find recipes with >10 grams of sugar")
+        # response = await search_recipes("Show me a recipe with creamy chicken and mushrooms")
+        # response = await search_recipes("Give me quick dinner ideas under 20 minutes")
+        # response = await search_recipes("Show me recipes that look similar to this dish")
+        # response = await search_recipes("Find recipes that look like this image but also mention spicy ingredients")
 
-    print("\n=== Final Result ===")
-    print(response)
-    weaviate_client.close()
+        print("\n=== Final Result ===")
+        print(response)
+        weaviate_client.close()
+
+    asyncio.run(main())
